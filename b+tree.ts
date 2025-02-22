@@ -103,18 +103,13 @@ function is_leaf(node: Node): node is LeafNode {
 // inserts the node into btree and then returns new root
 // the left child of a node will contain keys which are less than or equal to nodes key and right will have keys greater than nodes key
 export function insert(tree: Btree, key: Key, value: Value) {
-  let { node, parents } = search_node_for_insertion(tree.root, key);
-
-  console.assert(
-    is_leaf(node) === true,
-    'In insert function search_node_for_insertion returned non leaf node'
-  );
+  const { leafNode, parentsWithChildIdxes } = search_node(tree.root, key);
 
   // first time insertion happens at leaf node so no children are there
-  insert_into_leaf_node(node, key, value);
+  insert_into_leaf_node(leafNode, key, value);
 
   // balancing if overflow happens
-  const newRoot = balance(tree, node, parents);
+  const newRoot = balance_insertion(tree, leafNode, parentsWithChildIdxes);
   if (newRoot) {
     tree.root = newRoot;
     tree.height++;
@@ -147,7 +142,7 @@ function split_em_up(tree: Btree, node: Node) {
       keys: node.keys.slice(pivotIndex + 1),
       values: node.values.slice(pivotIndex + 1),
       left: null,
-      right: null,
+      right: null
     });
 
     console.assert(left.keys.length >= tree.min_keys_per_leaf_node, 'We fucked up in splitting');
@@ -189,17 +184,18 @@ function split_em_up(tree: Btree, node: Node) {
 
 // balance and return if there is new root of the tree
 // it returns undefined if we don't create any new root
-function balance(
+function balance_insertion(
   tree: Btree,
   node: Node, // the node we are balancing
-  parents: InternalNode[],
-  previousSplitData?: { pivotKey: Key; left: Node; right: Node }
+  parentsWithChildIdxes: ParentsWithChildIdxes,
+  previousSplitData?: { pivotKey: Key; insertAt: number, left: Node; right: Node }
 ): Node | undefined {
   if (previousSplitData) {
     //? this is runtime check, can we avoid it?
     if (is_leaf(node)) throw Error('why the fuck previousSplitData is being inserted into leaf node?');
     insert_into_internal_node(
       node,
+      previousSplitData.insertAt,
       previousSplitData.pivotKey,
       previousSplitData.left,
       previousSplitData.right
@@ -213,7 +209,7 @@ function balance(
     return undefined;
   }
 
-  let isRoot = !parents.length;
+  let isRoot = !parentsWithChildIdxes.length;
   let { left, right, pivotKey } = split_em_up(tree, node);
 
   if (isRoot) {
@@ -229,17 +225,14 @@ function balance(
   }
 
   // send the pivot to parent
-  return balance(tree, parents.pop()!, parents, { pivotKey, left, right });
+  const { parent: nextNode, childIdx: insertAt } = parentsWithChildIdxes.pop()!;
+  return balance_insertion(tree, nextNode, parentsWithChildIdxes, { pivotKey, insertAt, left, right });
 }
 
 //* This is called by balance when we are doing the insertion inside the non leaf node
 //* Balance will call this to insert a pivot into parent after splitting
 // since this is being called on parent we also need to delete the old outdated reference of the child node that was split before calling this function
-function insert_into_internal_node(node: InternalNode, key: Key, left: Node, right: Node) {
-  console.assert(is_leaf(node) === false, 'Why the fuck insert_into_internal_node called on leaf node?');
-
-  let insertAt = binary_search(node, key);
-
+function insert_into_internal_node(node: InternalNode, insertAt: number, key: Key, left: Node, right: Node) {
   // make space for new element inside the array
   node.keys.push(0);
 
@@ -296,27 +289,14 @@ function binary_search(root: Node, target: Key) {
   return low;
 }
 
-// insert will always happen at leaf node
+type ParentsWithChildIdxes = { parent: InternalNode; childIdx: number }[];
+// insert/delete will always happen at leaf node
 // if value X is *less than or equal* to some internal node then search progresses towards left child
 // if value X is *greater* than some internal node then search progresses towards right child
-function search_node_for_insertion(
-  root: Node,
-  key: Key,
-  parents: InternalNode[] = []
-): { node: LeafNode; parents: InternalNode[] } {
-  // when we reached the leaf
-  if (is_leaf(root)) return { node: root, parents };
-
-  let index = binary_search(root, key);
-  parents.push(root);
-  return search_node_for_insertion(root.children[index], key, parents);
-}
-
-// same as insert_node_for_deletion but captures more data to save index recalculaion and it's iterative
-export function search_node_for_deletion(
+function search_node(
   root: Node,
   key: Key
-): { leafNode: LeafNode; parentsWithChildIdxes: { parent: InternalNode; childIdx: number }[] } {
+): { leafNode: LeafNode; parentsWithChildIdxes: ParentsWithChildIdxes } {
   const parentsWithChildIdxes = [];
   while (!is_leaf(root)) {
     let childIdx = binary_search(root, key);
@@ -328,7 +308,7 @@ export function search_node_for_deletion(
 
 // while our tree can have multiple occurrences for same key, we will delete first one that we find
 export function delete_key(tree: Btree, key: Key) {
-  const { leafNode, parentsWithChildIdxes } = search_node_for_deletion(tree.root, key);
+  const { leafNode, parentsWithChildIdxes } = search_node(tree.root, key);
 
   // we can just do delete as we don't need to adjust any children references since this is a leaf
   if (!delete_from_leaf_node(leafNode, key)) {
@@ -504,38 +484,6 @@ function merge(parent: InternalNode, childIdx: number) {
   }
 }
 
-function is_node_balanced(tree: Btree, node: Node) {
-  if (is_leaf(node) && node.keys.length >= tree.min_keys_per_leaf_node) return true;
-  if (node.keys.length >= tree.min_keys_per_inner_node) return true;
-  return false;
-}
-
-// this will check if the node.keys have correct values, if not update them to satisfy btree property
-// property is, all keys to the left child of a node should be less than equal to and all keys to the right should be strictly greater
-function balance_node(node: InternalNode, childIdx: number) {
-  const childNode = node.children[childIdx];
-
-  // if child node is empty we can't compare and we don't need to
-  if (!childNode.keys.length) return;
-
-  const leftParentKeyIdx = childIdx - 1; // assuming child is right
-  const rightParentKeyIdx = childIdx; // assuming the child is at left
-
-  if (leftParentKeyIdx >= 0 && leftParentKeyIdx < node.keys.length) {
-    // child is at right side, so the parent key should be less than first key in child
-    if (!(node.keys[leftParentKeyIdx] < childNode.keys.at(0)!)) {
-      node.keys[leftParentKeyIdx] = childNode.left!.keys.at(-1)!;
-    }
-  }
-
-  if (rightParentKeyIdx >= 0 && rightParentKeyIdx < node.keys.length) {
-    // when child is at left side, so the parent key should be less than or equal to last key in child
-    if (!(node.keys[rightParentKeyIdx] >= childNode.keys.at(-1)!)) {
-      node.keys[rightParentKeyIdx] = childNode.keys.at(-1)!;
-    }
-  }
-}
-
 // this only does merging with siblings or merging with parent depending upon whether nodes are leaf or internal
 // if merging with sibling is enough then it does otherwise we have to do merging with parent. (Note: merging with parent is only available for leaf nodes)
 function balance_deletion(
@@ -544,12 +492,18 @@ function balance_deletion(
   childIdx: number,
   parentsWithChildIdxes: { parent: InternalNode; childIdx: number }[] // parents of parentNode
 ): Node | undefined {
-  // during previous balancing call we might have updated the keys in previous parent
-  // hence we need to make sure that this parent which is one level up(parent of previous parent) has correct order of keys
-  balance_node(parent, childIdx);
-
   const childNode = parent.children[childIdx];
-  const isNodeBalanced = is_node_balanced(tree, childNode);
+
+  // check if node is already balanced
+  let isNodeBalanced;
+  if (is_leaf(childNode)) { 
+    if(childNode.keys.length >= tree.min_keys_per_leaf_node) { isNodeBalanced = true; }
+    else { isNodeBalanced = false; }
+  } else {
+    if (childNode.keys.length >= tree.min_keys_per_inner_node) { isNodeBalanced = true }
+    else { isNodeBalanced = false }
+  }
+
   if (!isNodeBalanced) {
     // first we try to steal and if stealing fails then we will merge
     if (steal(tree, parent, childIdx) === false) {
@@ -619,7 +573,8 @@ export function search(root: Node, key: Key): Value | undefined {
   }
 }
 
-// uses bfs to print the tree
+// uses bfs to print the tree, uses pointers right pointer to traverse level
+// this does not gaurantees that tree is valid, to check validity see `validate_tree`
 export function print_tree(tree: Btree, str?: string) {
   str && console.log(str);
 
