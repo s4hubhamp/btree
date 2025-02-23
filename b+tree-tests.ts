@@ -4,7 +4,7 @@ import type { Btree, Key, Value } from './b+tree';
 const N = 1000;
 console.log(`Correctness tests input size is ${N}`);
 
-logTime('   doing operations in sorted order', () => {
+logTime('   operations in sorted order', () => {
   for(let maxKeys = 2; maxKeys <= 100; maxKeys++) {
     const SortedKeyAndValues = Array.from({ length: N }, (_, i) => ({ key: i + 1, val: i + 1 }));
     const TreeWithSortedInsertions = init_btree(maxKeys, maxKeys);
@@ -13,7 +13,7 @@ logTime('   doing operations in sorted order', () => {
   }
 });
 
-logTime('   doing operations in random order', () => {
+logTime('   operations in random order', () => {
   for(let maxKeys = 2; maxKeys <= 100; maxKeys++) {
     const RandomKeyAndValues = shuffleArr(Array.from({ length: N }, (_, i) => ({ key: i + 1, val: i + 1 })));
     const TreeWithRandomInsertions = init_btree(maxKeys, maxKeys);

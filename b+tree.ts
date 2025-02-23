@@ -20,8 +20,6 @@ export type Value = any;
 type InternalNode = {
   keys: Array<Key>;
   children: Array<Node>;
-  left: InternalNode | null;
-  right: InternalNode | null;
 };
 
 type LeafNode = {
@@ -145,6 +143,19 @@ function split_em_up(tree: Btree, node: Node) {
       right: null
     });
 
+    left.left = node.left;
+    left.right = right;
+    right.left = left;
+    right.right = node.right;
+  
+    if (node.left) {
+      node.left.right = left;
+    }
+  
+    if (node.right) {
+      node.right.left = right;
+    }
+
     console.assert(left.keys.length >= tree.min_keys_per_leaf_node, 'We fucked up in splitting');
     console.assert(right.keys.length >= tree.min_keys_per_leaf_node, 'We fucked up in splitting');
   } else {
@@ -164,19 +175,6 @@ function split_em_up(tree: Btree, node: Node) {
 
     console.assert(left.keys.length >= tree.min_keys_per_inner_node, 'We fucked up in splitting');
     console.assert(right.keys.length >= tree.min_keys_per_inner_node, 'We fucked up in splitting');
-  }
-
-  left.left = node.left;
-  left.right = right;
-  right.left = left;
-  right.right = node.right;
-
-  if (node.left) {
-    node.left.right = left;
-  }
-
-  if (node.right) {
-    node.right.left = right;
   }
 
   return { pivotKey, left, right };
@@ -333,43 +331,43 @@ export function delete_key(tree: Btree, key: Key) {
 // if we can't steal, that is siblings already has minimum keys we will return false indicating we didn't steal any
 function steal(tree: Btree, parentNode: InternalNode, childIdx: number) {
   const childNode = parentNode.children[childIdx];
-  console.assert(!!childNode, `Child node not found for index ${childIdx} in parent ${parentNode}`);
+  const leftSibling = childIdx > 0 ? parentNode.children[childIdx - 1] : undefined;
+  const rightSibling = childIdx < parentNode.children.length - 1 ? parentNode.children[childIdx + 1] : undefined;
 
   // can we steal from left
-  if (childIdx > 0 && childNode.left && childNode.left.keys.length > tree.min_keys_per_inner_node) {
+  if (leftSibling && leftSibling.keys.length > tree.min_keys_per_inner_node) {
     const parentKeyIndex = getParentKeyIndexWhenSiblingIsOnLeft(childIdx);
     if (is_leaf(childNode)) {
-      const key = childNode.left.keys.pop()!,
-        value = childNode.left.values.pop()!;
+      const key = leftSibling.keys.pop()!,
+      // @ts-ignore
+      value = leftSibling.values.pop()!;
       // insert key and value at start
       childNode.keys.unshift(key);
       childNode.values.unshift(value);
       // since right can't have keys bigger than parent update parent
-      parentNode.keys[parentKeyIndex] = childNode.left.keys.at(-1)!;
+      parentNode.keys[parentKeyIndex] = leftSibling.keys.at(-1)!;
     } else {
       // select the parent key as the new key
       const key =  parentNode.keys[parentKeyIndex]!;
-      const child = childNode.left.children.pop()!;
+      // @ts-ignore
+      const child = leftSibling.children.pop()!;
       // insert key and children at start
       childNode.keys.unshift(key);
       childNode.children.unshift(child);
       // once the child on left comes to right, parent key has to be reset because left child will bring all the smaller keys than parent
       // we will pick the removed key as new parent key because all the children we just moved were greater than it
-      parentNode.keys[parentKeyIndex] = childNode.left.keys.pop()!; //* Note that we are also removing it from left
+      parentNode.keys[parentKeyIndex] = leftSibling.keys.pop()!; //* Note that we are also removing it from left
     }
   }
 
   // can we steal from right
-  else if (
-    childIdx < parentNode.children.length - 1 &&
-    childNode.right &&
-    childNode.right.keys.length > tree.min_keys_per_inner_node
-  ) {
+  else if ( rightSibling && rightSibling.keys.length > tree.min_keys_per_inner_node) {
     const parentKeyIndex = getParentKeyIndexWhenSiblingIsOnRight(childIdx);
 
     if (is_leaf(childNode)) {
-      const key = childNode.right.keys.shift()!,
-        value = childNode.right.values.shift()!;
+      const key = rightSibling.keys.shift()!,
+      // @ts-ignore
+        value = rightSibling.values.shift()!;
       childNode.keys.push(key);
       childNode.values.push(value);
       // since the left side has keys less than or equal, update the parent Key
@@ -377,13 +375,14 @@ function steal(tree: Btree, parentNode: InternalNode, childIdx: number) {
     } else {
       // select the parent key as the new key
       const key = parentNode.keys[parentKeyIndex]!;
-      const child = childNode.right.children.shift()!;
+      // @ts-ignore
+      const child = rightSibling.children.shift()!;
       // insert at last
       childNode.keys.push(key);
       childNode.children.push(child);
       // once the child on right comes to left, parent key has to be reset because right child will bring all the bigger keys than parent
       // we will pick the removed key because all the children we just moved were lesser than equal to it
-      parentNode.keys[parentKeyIndex] = childNode.right.keys.shift()!; //* Note that we are also removing it from right
+      parentNode.keys[parentKeyIndex] = rightSibling.keys.shift()!; //* Note that we are also removing it from right
     }
   } else {
     return false;
@@ -403,6 +402,8 @@ function getParentKeyIndexWhenSiblingIsOnRight(childIdx: number): number {
 
 function merge(parent: InternalNode, childIdx: number) {
   const childNode = parent.children[childIdx];
+  const leftSibling = childIdx > 0 ? parent.children[childIdx - 1] : undefined;
+  const rightSibling = childIdx < parent.children.length - 1 ? parent.children[childIdx + 1] : undefined;
 
   //* Note: This function gets called only if we can't steal from both left and right siblings
   // This means that we already verified that both left and right siblings has min keys and thus they it's safe to merge with them
@@ -415,13 +416,13 @@ function merge(parent: InternalNode, childIdx: number) {
   // can we merge with left
   if (is_leaf(childNode)) {
     // merge with left
-    if (childIdx > 0 && childNode.left) {
+    if (leftSibling) {
       // merge current node with the left node
-      childNode.left.keys = childNode.left.keys.concat(childNode.keys);
-      childNode.left.values = childNode.left.values.concat(childNode.values);
+      leftSibling.keys = leftSibling.keys.concat(childNode.keys);
+      (leftSibling as LeafNode).values = (leftSibling as LeafNode).values.concat(childNode.values);
       // update the pointers
-      childNode.left.right = childNode.right;
-      if (childNode.right) childNode.right.left = childNode.left;
+      (leftSibling as LeafNode).right = childNode.right;
+      if (childNode.right) childNode.right.left = <LeafNode>leftSibling;
 
       const parentKeyIndex = getParentKeyIndexWhenSiblingIsOnLeft(childIdx);
       // remove the parent key
@@ -430,11 +431,11 @@ function merge(parent: InternalNode, childIdx: number) {
       parent.children.splice(childIdx, 1);
     }
     // merge with right
-    else if (childIdx < parent.children.length - 1 && childNode.right) {
-      childNode.keys = childNode.keys.concat(childNode.right.keys);
-      childNode.values = childNode.values.concat(childNode.right.values);
+    else if (rightSibling) {
+      childNode.keys = childNode.keys.concat(rightSibling.keys);
+      childNode.values = childNode.values.concat((rightSibling as LeafNode).values);
       // update the pointers
-      childNode.right = childNode.right.right;
+      childNode.right = (rightSibling as LeafNode).right;
       if (childNode.right) childNode.right.left = childNode;
       const parentKeyIndex = getParentKeyIndexWhenSiblingIsOnRight(childIdx);
       // remove the parent key
@@ -446,36 +447,30 @@ function merge(parent: InternalNode, childIdx: number) {
     }
   } else {
     // merge with left
-    if (childIdx > 0 && childNode.left) {
+    if (leftSibling) {
       const parentKeyIndex = getParentKeyIndexWhenSiblingIsOnLeft(childIdx);
       // choose parent key as the new key because all nodes to the childIdx.left are going to be smaller than or equal to it
       const newKey = parent.keys[parentKeyIndex];
       // remove parentKey to mark parent unbalanced
       parent.keys.splice(parentKeyIndex, 1);
       // since children remain the same, a newKey will be added in between the left and right keys
-      childNode.left.keys = childNode.left.keys.concat([newKey, ...childNode.keys]);
+      leftSibling.keys = leftSibling.keys.concat([newKey, ...childNode.keys]);
       // add children
-      childNode.left.children = childNode.left.children.concat(childNode.children);
-      // update the pointers
-      childNode.left.right = childNode.right;
-      if (childNode.right) childNode.right.left = childNode.left;
+      (leftSibling as InternalNode).children = (leftSibling as InternalNode).children.concat(childNode.children);
       // remove right as we have merged with left. right child is current childIdx
       parent.children.splice(childIdx, 1);
     }
     // merge with right
-    else if (childIdx < parent.children.length - 1 && childNode.right) {
+    else if (rightSibling) {
       const parentKeyIndex = getParentKeyIndexWhenSiblingIsOnRight(childIdx);
       // choose parent key as the new key because all nodes to the childIdx.left are going to be smaller than or equal to it
       const newKey = parent.keys[parentKeyIndex]!; 
       // remove a key from parent to mark parent node as unbalanced
       parent.keys.splice(parentKeyIndex, 1);
       // add new key before right keys
-      childNode.keys = childNode.keys.concat([newKey, ...childNode.right.keys]);
+      childNode.keys = childNode.keys.concat([newKey, ...rightSibling.keys]);
       // append children
-      childNode.children = childNode.children.concat(childNode.right.children);
-      // update the pointers
-      childNode.right = childNode.right.right;
-      if (childNode.right) childNode.right.left = childNode;
+      childNode.children = childNode.children.concat((rightSibling as InternalNode).children);
       // remove right child from parent since it's now merged with left
       parent.children.splice(childIdx + 1, 1);
     } else {
@@ -578,39 +573,32 @@ export function search(root: Node, key: Key): Value | undefined {
 export function print_tree(tree: Btree, str?: string) {
   str && console.log(str);
 
-  let curr_leaftmost_node: Node | null = tree.root;
-  let lvl = 1;
-
+  const queue = [{node: tree.root, level: 1}];
+  
   let txt = `----------------------------------------------------------------------------------
   h = ${tree.height}`;
 
-  while (curr_leaftmost_node) {
-    txt += `\n${lvl++} --  `;
+  let lastPrintedLevel = 0;
+  while (queue.length) {
+    const {node, level} = queue.shift()!;
 
-    let curr: Node | null = curr_leaftmost_node;
-    while (curr) {
-      txt += ' [';
+    if(level > lastPrintedLevel) {
+      txt += `\n${level} --  `;
+      lastPrintedLevel++;
+    }
 
-      let content = [];
-      for (let i = 0; i < curr.keys.length; i++) {
-        if (is_leaf(curr)) {
-          content.push(`${curr.keys[i]}`);
-          // content.push(`(${curr.keys[i]},${curr.values[i]})`);
-        } else {
-          content.push(`${curr.keys[i]}`);
-        }
+    let content = [];
+    for (let i = 0; i < node.keys.length; i++) {
+      if (is_leaf(node)) {
+        content.push(`${node.keys[i]}`);
+        // content.push(`(${node.keys[i]},${node.values[i]})`);
+      } else {
+        content.push(`${node.keys[i]}`);
       }
-
-      txt += `${content.join(',')}]`;
-      curr = curr.right;
     }
 
-    if (is_leaf(curr_leaftmost_node)) {
-      curr_leaftmost_node = null;
-    } else {
-      curr_leaftmost_node = curr_leaftmost_node.children[0];
-      console.assert(!!curr_leaftmost_node, 'for internal node there is no children found');
-    }
+    if(!is_leaf(node)) queue.push(...node.children.map(c => ({node: c, level: level + 1})));
+    txt += ` [${content.join(',')}]`;
   }
 
   console.log(txt);
@@ -657,6 +645,7 @@ export function validate_tree(tree: Btree) {
   ];
 
   let maxLvl = 0;
+  let firstLeafchecked = false;
   while (queue.length) {
     let { node, level, min, max } = queue.shift()!;
     maxLvl = level;
@@ -691,7 +680,14 @@ export function validate_tree(tree: Btree) {
       );
 
       for (let i = 0; i < node.children.length; i++) {
-        console.assert(!!node.children[i], 'invalid children node');
+        const child = node.children[i];
+        if(is_leaf(child)) {
+          // check pointers
+          if(i > 0) console.assert(Object.is(child.left, node.children[i-1]), 'left link is incorrect');
+          if(i < node.children.length - 1) console.assert(Object.is(child.right, node.children[i+1]), 'right link is incorrect');
+        }
+
+        console.assert(!!child, 'invalid children node');
 
         const leftParentKeyIdx = i - 1;
         const rightParentKeyIdx = i;
@@ -705,7 +701,7 @@ export function validate_tree(tree: Btree) {
         // } all nodes should be greater than ${_min} and all nodes should be less than or equal to ${_max}`);
 
         queue.push({
-          node: node.children[i],
+          node: child,
           min: _min,
           max: _max,
           level: level + 1,
@@ -718,6 +714,15 @@ export function validate_tree(tree: Btree) {
           'min keys per leaf node check failed'
         );
       }
+
+      if(!firstLeafchecked) {
+        firstLeafchecked = true;
+        console.assert(node.left === null, 'for first leaf node left link is incorrect');
+      }
+
+      // we will be processing the last leaf if queue is empty
+      if(!queue.length) console.assert(node.right === null, 'for last leaf node right link is incorrect');
+
       console.assert(node.keys.length <= tree.max_keys_per_leaf_node, 'max keys per leaf node check failed');
     }
   }
